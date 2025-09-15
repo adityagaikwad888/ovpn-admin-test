@@ -3,6 +3,8 @@ version: '3'
 networks:
   vpn-internal:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1372
     ipam:
       config:
         - subnet: 172.20.0.0/16
@@ -18,12 +20,8 @@ services:
       OVPN_SERVER_NET: "10.8.0.0"
       OVPN_SERVER_MASK: "255.255.255.0"
       OVPN_PASSWD_AUTH: "true"
-      # These 
       OVPN_CUSTOM_ROUTES: "172.20.0.0 255.255.0.0"
-      OVPN_ROUTES: "172.20.0.0 255.255.0.0"
       DOCKER_NETWORK: "172.20.0.0/16"
-      # Add split tunneling configuration
-      OVPN_SPLIT_TUNNEL: "true"
     cap_add:
       - NET_ADMIN
     sysctls:
@@ -50,23 +48,12 @@ services:
       OVPN_CCD: "true"
       OVPN_CCD_PATH: "/mnt/ccd"
       EASYRSA_PATH: "/mnt/easyrsa"
-      OVPN_SERVER: "44.223.53.225:7777:udp" # Changed to UDP
+      OVPN_SERVER: "13.233.114.4:7777:udp" # Changed to UDP
       OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"
       OVPN_AUTH: "true"
       OVPN_AUTH_DB_PATH: "/mnt/easyrsa/pki/users.db"
       LOG_LEVEL: "debug"
-      # Add split tunneling for admin
-      OVPN_SPLIT_TUNNEL: "true"
-      OVPN_ROUTES: "172.20.0.0 255.255.0.0"
     network_mode: service:openvpn
     volumes:
       - ./easyrsa_master:/mnt/easyrsa
       - ./ccd_master:/mnt/ccd
-
-  nginx:
-    image: nginx:alpine
-    container_name: vpn-nginx
-    networks:
-      vpn-internal:
-        ipv4_address: 172.20.0.10
-    restart: unless-stopped

@@ -48,36 +48,6 @@ if [ ! -z "${OVPN_CUSTOM_ROUTES}" ]; then
   echo 'push "route '${OVPN_CUSTOM_ROUTES}'"' >> /etc/openvpn/openvpn.conf
 fi
 
-# Replace lines 23-27 in openvpn.conf with this dynamic generation:
-
-# Always push topology subnet
-echo 'push "topology subnet"' >> /etc/openvpn/openvpn.conf
-
-# Split tunneling configuration based on environment variables
-if [ "${OVPN_SPLIT_TUNNEL}" = "true" ]; then
-  echo "# Split tunneling enabled - only route specific networks through VPN" >> /etc/openvpn/openvpn.conf
-  
-  # Add routes from OVPN_ROUTES environment variable
-  if [ ! -z "${OVPN_ROUTES}" ]; then
-    echo 'push "route '${OVPN_ROUTES}'"' >> /etc/openvpn/openvpn.conf
-  fi
-  
-  # Add Docker network route from DOCKER_NETWORK
-  if [ ! -z "${DOCKER_NETWORK}" ]; then
-    DOCKER_NET=$(echo ${DOCKER_NETWORK} | cut -d'/' -f1)
-    echo 'push "route '${DOCKER_NET}' 255.255.0.0"' >> /etc/openvpn/openvpn.conf
-  fi
-  
-  # Don't push redirect-gateway for split tunneling
-  echo "# redirect-gateway disabled for split tunneling" >> /etc/openvpn/openvpn.conf
-else
-  # Default behavior - route all traffic through VPN
-  echo 'push "redirect-gateway def1 bypass-dhcp"' >> /etc/openvpn/openvpn.conf
-fi
-
-# Always add these
-echo 'push "route-metric 9999"' >> /etc/openvpn/openvpn.conf
-echo 'push "dhcp-option DNS 1.1.1.1"' >> /etc/openvpn/openvpn.conf
 
 if [ ${OVPN_PASSWD_AUTH} = "true" ]; then
   mkdir -p /etc/openvpn/scripts/
