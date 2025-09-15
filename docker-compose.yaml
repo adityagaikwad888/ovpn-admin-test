@@ -22,6 +22,9 @@ services:
       OVPN_PASSWD_AUTH: "true"
       OVPN_CUSTOM_ROUTES: "172.20.0.0 255.255.0.0"
       DOCKER_NETWORK: "172.20.0.0/16"
+      # MTU optimization 
+      OVPN_TUN_MTU: "1372"
+      OVPN_MSSFIX: "1332"
     cap_add:
       - NET_ADMIN
     sysctls:
