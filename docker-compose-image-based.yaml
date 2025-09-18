@@ -1,0 +1,41 @@
+version: '3'
+
+networks:
+  vpn-internal:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1372
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+services:
+  openvpn:
+    image: adityagaikwad888/openvpn:latest
+    command: /etc/openvpn/setup/configure.sh
+    env_file:
+      - ./.env
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+    ports:
+      - 7777:1194/udp # Changed to UDP for better performance
+      - 8080:8080 # for ovpn-admin because of network_mode
+    volumes:
+      - ./easyrsa_master:/etc/openvpn/easyrsa
+      - ./ccd_master:/etc/openvpn/ccd
+    networks:
+      - vpn-internal
+
+  ovpn-admin:
+    image: adityagaikwad888/ovpn-admin:latest
+    command: /app/ovpn-admin
+    env_file:
+      - ./.env
+    network_mode: service:openvpn
+    volumes:
+      - ./easyrsa_master:/mnt/easyrsa
+      - ./ccd_master:/mnt/ccd
+    depends_on:
+      - openvpn
