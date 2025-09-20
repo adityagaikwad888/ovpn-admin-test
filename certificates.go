@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strconv"
+	// "strconv"
 	"time"
 )
 
@@ -102,6 +102,18 @@ func genServerCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn 
 	serialNumberRange := new(big.Int).Lsh(big.NewInt(1), 128)
 	serial, err := rand.Int(rand.Reader, serialNumberRange)
 
+    if err != nil {
+        return nil, fmt.Errorf("can't get server certificate expiration value: %w", err)
+    }
+
+	// certLifetimeDays, err := strconv.Atoi(*serverCertExpirationDays)
+
+    // notBefore := time.Now()
+    // notAfter := notBefore.Add(time.Duration(certLifetimeDays) * 24 * time.Hour)
+    // if notAfter.After(ca.NotAfter) {
+    //     notAfter = ca.NotAfter
+    // }
+
 	template := x509.Certificate{
 		BasicConstraintsValid: true,
 		DNSNames:              []string{cn},
@@ -111,8 +123,10 @@ func genServerCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn 
 		},
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		// NotBefore: notBefore,
 		NotBefore:   time.Now(),
-		NotAfter:    ca.NotAfter,
+		// NotAfter:    notAfter,
+		NotAfter: time.Now().AddDate(5, 0, 0),
 	}
 
 	issuerBytes, err := x509.CreateCertificate(rand.Reader, &template, ca, &privKey.PublicKey, caPrivKey)
@@ -133,17 +147,19 @@ func genServerCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn 
 func genClientCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn string) (issuerPEM *bytes.Buffer, err error) {
 	serialNumberRange := new(big.Int).Lsh(big.NewInt(1), 128)
 	serial, err := rand.Int(rand.Reader, serialNumberRange)
-
-	certLifetimeDays, err := strconv.Atoi(*clientCertExpirationDays)
+	
 	if err != nil {
 		return nil, fmt.Errorf("can't get client certificate expiration value: %w", err)
 	}
 
-	notBefore := time.Now()
-	notAfter := notBefore.Add(time.Duration(certLifetimeDays) * 24 * time.Hour)
-	if notAfter.After(ca.NotAfter) {
-		notAfter = ca.NotAfter
-	}
+	// certLifetimeDays, err := strconv.Atoi(*clientCertExpirationDays)
+
+	// notBefore := time.Now()
+	// notAfter := notBefore.Add(time.Duration(certLifetimeDays) * 24 * time.Hour)
+	// if notAfter.After(ca.NotAfter) {
+	// 	notAfter = ca.NotAfter
+	// }
+	
 
 	template := x509.Certificate{
 		BasicConstraintsValid: true,
@@ -154,8 +170,10 @@ func genClientCert(privKey, caPrivKey *rsa.PrivateKey, ca *x509.Certificate, cn 
 		},
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		NotBefore:   notBefore,
-		NotAfter:    notAfter,
+		// NotBefore:   notBefore,
+		NotBefore: time.Now(),
+		// NotAfter:    notAfter,
+		NotAfter: time.Now().AddDate(1, 0, 0),
 	}
 
 	issuerBytes, err := x509.CreateCertificate(rand.Reader, &template, ca, &privKey.PublicKey, caPrivKey)

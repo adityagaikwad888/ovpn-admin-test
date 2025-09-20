@@ -20,13 +20,14 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
     ports:
-      - 7777:1194/udp # Changed to UDP for better performance
-      - 8080:8080 # for ovpn-admin because of network_mode
+      - 7777:1194/udp
+      - 8080:8080
     volumes:
       - ./easyrsa_master:/etc/openvpn/easyrsa
       - ./ccd_master:/etc/openvpn/ccd
     networks:
       - vpn-internal
+    restart: always
 
   ovpn-admin:
     image: adityagaikwad888/ovpn-admin:latest
@@ -39,3 +40,4 @@ services:
       - ./ccd_master:/mnt/ccd
     depends_on:
       - openvpn
+    restart: always
