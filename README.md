@@ -1,7 +1,7 @@
 # OpenVPN Admin Panel - Complete Knowledge Transfer Guide
 
 ## Table of Contents
-1. [Project Overview](#project-overview)
+1. [Overview](#overview)
 2. [Architecture Deep Dive](#architecture-deep-dive)
 3. [Docker Compose Configuration](#docker-compose-configuration)
 4. [Configure.sh Script Analysis](#configuresh-script-analysis)
@@ -14,7 +14,7 @@
 
 ---
 
-## Project Overview
+## Overview
 
 ### What is ovpn-admin?
 
@@ -25,7 +25,7 @@
 
 ### Key Features
 - **User Management**: Add, delete, enable/disable VPN users
-- **Certificate Management**: Automatic generation, revocation, and renewal of SSL certificates
+- **Client Certificate Management**: Automatic generation, revocation, and renewal of SSL certificates
 - **Route Management**: Configure custom network routes for clients
 - **Real-time Monitoring**: Track connected users and connection statistics
 - **Password Authentication**: Optional additional password layer beyond certificates
@@ -58,7 +58,7 @@ Both containers run in the same Docker network (`vpn-internal`) and share volume
 ### Networking Strategy
 - **Internal Network**: `172.20.0.0/16` (Docker containers)
 - **VPN Network**: `10.8.0.0/24` (VPN clients get IPs from this range)
-- **MTU Optimization**: Set to 1372 to prevent fragmentation
+- **MTU Optimization**: Set to 1372 to prevent fragmentation -> (Change to according with network)
 - **Port Mapping**: External port 7777 maps to internal port 1194
 
 ---
@@ -88,37 +88,26 @@ networks:
 
 ```yaml
 openvpn:
-  build:
-    context: .
-    dockerfile: Dockerfile.openvpn
-  image: openvpn:local
-  command: /etc/openvpn/setup/configure.sh
+    image: nexus.spreezy.in/openvpn:v1.0.0
+    pull_policy: always
+    command: /etc/openvpn/setup/configure.sh
 ```
 
 **Build Process:**
-- Uses `Dockerfile.openvpn` to build the OpenVPN server image
-- Tags the image as `openvpn:local`
+- Pulls pre-built image from private registry (nexus.spreezy.in)
+- Always pulls latest image on startup
 - Executes `configure.sh` as the main command (we'll analyze this script later)
 
 #### Environment Variables Breakdown
 
 ```yaml
-environment:
-  OVPN_SERVER_NET: "10.8.0.0"              # VPN subnet network
-  OVPN_SERVER_MASK: "255.255.255.0"        # VPN subnet mask (/24)
-  OVPN_PASSWD_AUTH: "true"                  # Enable password authentication
-  OVPN_CUSTOM_ROUTES: "172.20.0.0 255.255.0.0"  # Route to Docker network
-  DOCKER_NETWORK: "172.20.0.0/16"          # Docker internal network
-  OVPN_TUN_MTU: "1372"                     # Tunnel interface MTU
-  OVPN_MSSFIX: "1332"                      # MSS clamping value
+    env_file:
+      - ./.env
 ```
 
 **Variable Details:**
-- **OVPN_SERVER_NET/MASK**: Defines the IP range assigned to VPN clients
-- **OVPN_PASSWD_AUTH**: Enables two-factor auth (certificate + password)
-- **OVPN_CUSTOM_ROUTES**: Allows VPN clients to access Docker network
-- **OVPN_TUN_MTU**: Maximum transmission unit for VPN tunnel
-- **OVPN_MSSFIX**: TCP MSS clamping to prevent fragmentation
+- Loads environment variables from `.env` file 
+- Read the .env.template for details on each variable
 
 #### Networking and Security
 
@@ -141,28 +130,27 @@ ports:
 
 ```yaml
 ovpn-admin:
-  build:
-    context: .
-    dockerfile: Dockerfile.ovpn-admin
-  image: ovpn-admin:local
-  command: /app/ovpn-admin
+    image: nexus.spreezy.in/ovpn-admin:v1.0.0
+    pull_policy: always
+    command: /app/ovpn-admin
 ```
 
 #### Admin Environment Variables
 
 ```yaml
-environment:
-  OVPN_DEBUG: "true"                        # Enable debug logging
-  OVPN_VERBOSE: "true"                      # Verbose output
-  OVPN_NETWORK: "10.8.0.0/24"             # VPN network range
-  OVPN_CCD: "true"                         # Enable client config directory
-  OVPN_CCD_PATH: "/mnt/ccd"                # Path to client configs
-  EASYRSA_PATH: "/mnt/easyrsa"             # Path to certificates
-  OVPN_SERVER: "13.233.114.4:7777:udp"    # Public server address
-  OVPN_INDEX_PATH: "/mnt/easyrsa/pki/index.txt"  # Certificate index
-  OVPN_AUTH: "true"                        # Enable authentication
-  OVPN_AUTH_DB_PATH: "/mnt/easyrsa/pki/users.db" # User database
-  LOG_LEVEL: "debug"                       # Logging level
+    env_file:
+      - ./.env
+```
+**Variable Details:**
+- Shares the same `.env` file for consistent configuration
+
+#### Networking and Volumes
+
+```yaml
+    network_mode: service:openvpn            # Shares network stack with OpenVPN
+    volumes:
+      - ./easyrsa_master:/mnt/easyrsa       # Certificate storage
+      - ./ccd_master:/mnt/ccd                # Client config directory
 ```
 
 **Critical Configuration:**
@@ -174,7 +162,7 @@ environment:
 
 ## Configure.sh Script Analysis
 
-The `configure.sh` script is the heart of the OpenVPN setup process. Let's analyze it line by line:
+The `configure.sh` script is the main part of the OpenVPN setup process.
 
 ### Initial Setup
 ```bash
@@ -254,7 +242,7 @@ fi
 - TUN device is required for VPN tunnel interface
 - Character device with major:minor numbers 10:200
 
-### OpenVPN Configuration Processing
+### OpenVPN Configuration (Dynamically Appends Config in openvpn.conf (openvpn server config file) )
 ```bash
 cp -f /etc/openvpn/setup/openvpn.conf /etc/openvpn/openvpn.conf
 
@@ -273,8 +261,8 @@ fi
 
 **Configuration Logic:**
 - Copies base configuration to runtime location
-- Dynamically adds MTU settings if specified
-- Adds MSS fix if specified
+- Dynamically adds MTU settings if specified in .env file
+- Adds MSS fix if specified in .env file
 - Injects custom routes for client access
 
 ### Password Authentication Setup
@@ -327,6 +315,7 @@ topology subnet                             # Use subnet topology (recommended)
 #port 1194                                 # Port set via command line
 #dev tun0                                  # Device set via command line
 ```
+***Note**: Protocol, port, and device are set via command line in `configure.sh`*
 
 ### Certificate Paths
 ```
@@ -620,6 +609,11 @@ All environment variables are configured via the `.env` file. Copy [`.env.templa
 | `OVPN_AUTH_DB_PATH` | `/mnt/easyrsa/pki/users.db` | User database file path | Default path |
 | `LOG_LEVEL` | `info` | Application logging level | `"debug"` for troubleshooting |
 
+### Global Variables
+| Variable | Default | Description | Example |
+|----------|---------|-------------|---------|
+| `EASYRSA_CERT_EXPIRY` | `false` | Certificate expiry duration (in days) | `365` |
+
 ### Configuration Examples
 
 #### Production Configuration
@@ -741,7 +735,7 @@ docker build -f Dockerfile.openvpn \
     -t ${DOCKER_REPO_OPENVPN}:latest \
     -t ${DOCKER_REPO_OPENVPN}:${VERSION} .
 
-# Build ovpn-admin image  
+# Build ovpn-admin image
 echo "🔨 Building ovpn-admin image..."
 docker build -f Dockerfile.ovpn-admin \
     -t ${DOCKER_REPO_ADMIN}:latest \
