@@ -11,6 +11,7 @@
 8. [Environment Variables Reference](#environment-variables-reference)
 9. [Troubleshooting Guide](#troubleshooting-guide)
 10. [Security Considerations](#security-considerations)
+11. [DNS Configuration Deep Dive](#dns-configuration-deep-dive)
 
 ---
 
@@ -76,13 +77,14 @@ networks:
       com.docker.network.driver.mtu: 1372  # Prevents packet fragmentation
     ipam:
       config:
-        - subnet: 172.20.0.0/16             # Internal container network
+        - subnet: 20.20.0.0/16              # Internal container network
 ```
 
 **Explanation:**
 - Creates isolated network for containers
 - MTU of 1372 prevents fragmentation issues common in VPN scenarios
-- Subnet `172.20.0.0/16` provides plenty of IP addresses for containers
+- Subnet `20.20.0.0/16` provides plenty of IP addresses for containers
+- **Updated subnet** from `172.20.0.0/16` to `20.20.0.0/16` to avoid conflicts with AWS VPC networks
 
 ### OpenVPN Service Configuration
 
@@ -119,12 +121,23 @@ sysctls:
 ports:
   - 7777:1194/udp                          # VPN port mapping
   - 8080:8080                              # Admin interface port
+dns:
+  - 172.31.0.2                             # Primary DNS (Private DNS server)
+  - 8.8.8.8                                # Secondary DNS (Google Public DNS)
 ```
 
 **Security Notes:**
 - `NET_ADMIN` capability allows network interface manipulation
 - IP forwarding is essential for routing VPN traffic
 - UDP protocol chosen for better VPN performance than TCP
+
+**DNS Configuration:**
+- **Primary DNS (172.31.0.2)**: Private DNS server for internal domain resolution
+  - Used for resolving private hosted zones (e.g., `*.spreezy.in`)
+  - Typically points to AWS Route53 private DNS or internal DNS server
+- **Secondary DNS (8.8.8.8)**: Google Public DNS for internet domain resolution
+  - Fallback for public DNS queries
+  - Ensures DNS resolution even if private DNS is unavailable
 
 ### Admin Service Configuration
 
@@ -246,14 +259,32 @@ fi
 ```bash
 cp -f /etc/openvpn/setup/openvpn.conf /etc/openvpn/openvpn.conf
 
+# DNS Domain Configuration
+if [ ! -z "$CUSTOM_DOMAIN" ]; then
+    echo 'push "dhcp-option DOMAIN '${CUSTOM_DOMAIN}'"' >> /etc/openvpn/openvpn.conf
+fi
+
+# Primary DNS Server
+if [ ! -z "$CUSTOM_DNS_PRIM" ]; then
+    echo 'push "dhcp-option DNS '${CUSTOM_DNS_PRIM}'"' >> /etc/openvpn/openvpn.conf
+fi
+
+# Secondary DNS Server
+if [ ! -z "$CUSTOM_DNS_SECO" ]; then
+    echo 'push "dhcp-option DNS '${CUSTOM_DNS_SECO}'"' >> /etc/openvpn/openvpn.conf
+fi
+
+# MTU Configuration
 if [ ! -z "$OVPN_TUN_MTU" ]; then
     echo "tun-mtu $OVPN_TUN_MTU" >> /etc/openvpn/openvpn.conf
 fi
 
+# MSS Fix Configuration
 if [ ! -z "$OVPN_MSSFIX" ]; then
     echo "mssfix $OVPN_MSSFIX" >> /etc/openvpn/openvpn.conf
 fi
 
+# Custom Routes
 if [ ! -z "${OVPN_CUSTOM_ROUTES}" ]; then
   echo 'push "route '${OVPN_CUSTOM_ROUTES}'"' >> /etc/openvpn/openvpn.conf
 fi
@@ -261,9 +292,24 @@ fi
 
 **Configuration Logic:**
 - Copies base configuration to runtime location
+- **DNS Domain Push**: Sets custom DNS domain suffix for VPN clients
+  - `CUSTOM_DOMAIN`: Domain suffix (e.g., "spreezy.in") for DNS resolution
+  - VPN clients will automatically append this domain to unqualified hostnames
+- **Primary DNS Push**: Configures primary DNS server for VPN clients
+  - `CUSTOM_DNS_PRIM`: Private DNS server (e.g., "172.31.0.2") for internal domains
+  - Resolves private hosted zones and internal resources
+- **Secondary DNS Push**: Configures fallback DNS server for VPN clients
+  - `CUSTOM_DNS_SECO`: Public DNS server (e.g., "8.8.8.8") for internet domains
+  - Ensures DNS redundancy and public domain resolution
 - Dynamically adds MTU settings if specified in .env file
 - Adds MSS fix if specified in .env file
 - Injects custom routes for client access
+
+**DNS Resolution Flow:**
+1. VPN client queries hostname → checks if matches `CUSTOM_DOMAIN`
+2. If internal domain → queries `CUSTOM_DNS_PRIM` (private DNS)
+3. If external domain or timeout → queries `CUSTOM_DNS_SECO` (public DNS)
+4. Result returned to client application
 
 ### Password Authentication Setup
 ```bash
@@ -359,15 +405,68 @@ cipher AES-256-GCM                         # Preferred cipher (AEAD)
 ### Client Network Configuration
 ```
 push "redirect-gateway def1 bypass-dhcp"   # Route all traffic through VPN
-push "dhcp-option DNS 8.8.8.8"            # Primary DNS server
-push "dhcp-option DNS 8.8.4.4"            # Secondary DNS server
 ```
+
+**Note:** DNS and domain settings are dynamically injected by `configure.sh` based on environment variables:
+- `CUSTOM_DOMAIN` → `push "dhcp-option DOMAIN xxx"`
+- `CUSTOM_DNS_PRIM` → `push "dhcp-option DNS xxx"` (Primary)
+- `CUSTOM_DNS_SECO` → `push "dhcp-option DNS xxx"` (Secondary)
+
+**DNS Configuration Details:**
+
+| Setting | Environment Variable | Example Value | Purpose |
+|---------|---------------------|---------------|---------|
+| **Domain Suffix** | `CUSTOM_DOMAIN` | `spreezy.in` | DNS search domain for unqualified hostnames |
+| **Primary DNS** | `CUSTOM_DNS_PRIM` | `172.31.0.2` | Private DNS server for internal domain resolution |
+| **Secondary DNS** | `CUSTOM_DNS_SECO` | `8.8.8.8` | Public DNS server for internet domain resolution |
+
+**DNS Resolution Examples:**
+
+```bash
+# Example 1: Internal resource lookup
+VPN Client queries: "api-server"
+→ Expanded to: "api-server.spreezy.in" (using CUSTOM_DOMAIN)
+→ Resolved by: 172.31.0.2 (CUSTOM_DNS_PRIM)
+→ Returns: Private IP (e.g., 10.0.1.50)
+
+# Example 2: Public domain lookup
+VPN Client queries: "google.com"
+→ Not matching CUSTOM_DOMAIN
+→ Resolved by: 8.8.8.8 (CUSTOM_DNS_SECO)
+→ Returns: Public IP (e.g., 142.250.185.46)
+
+# Example 3: Fully qualified internal domain
+VPN Client queries: "db.spreezy.in"
+→ Matches CUSTOM_DOMAIN
+→ Resolved by: 172.31.0.2 (CUSTOM_DNS_PRIM)
+→ Returns: Private IP from Route53 private hosted zone
+```
+
+**Why This Configuration?**
+
+This DNS setup enables **split-horizon DNS** for VPN clients:
+
+1. **Private Domain Resolution**:
+   - Internal services (e.g., `*.spreezy.in`) resolve via private DNS
+   - Enables access to AWS resources in private subnets
+   - Works with Route53 private hosted zones
+
+2. **Public Domain Resolution**:
+   - Internet domains resolve via public DNS
+   - Ensures normal internet browsing works
+   - Provides DNS redundancy and reliability
+
+3. **Domain Suffix Automation**:
+   - Users can type short names (e.g., "api-server")
+   - Automatically expanded to FQDN (e.g., "api-server.spreezy.in")
+   - Improves user experience and reduces typing
 
 **Security Analysis:**
 - **AES-256-GCM**: Modern authenticated encryption
 - **TLS-Auth**: Prevents DoS attacks and port scanning
 - **Certificate Verification**: Multiple layers of authentication
 - **User/Group**: Runs with minimal privileges
+- **DNS Security**: Private DNS prevents DNS leaks and ensures internal resolution
 
 ---
 
@@ -472,10 +571,15 @@ OVPN_SERVER="YOUR_PUBLIC_IP:7777:udp"
 # Network Configuration (adjust if conflicts exist)
 OVPN_SERVER_NET="10.8.0.0"
 OVPN_SERVER_MASK="255.255.255.0"
-DOCKER_NETWORK="172.20.0.0/16"
+DOCKER_NETWORK="20.20.0.0/16"
 
 # Custom Routes (allows VPN clients to access Docker containers)
-OVPN_CUSTOM_ROUTES="172.20.0.0 255.255.0.0"
+OVPN_CUSTOM_ROUTES="20.20.0.0 255.255.0.0"
+
+# DNS Configuration (for VPN clients)
+CUSTOM_DOMAIN="spreezy.in"          # DNS search domain
+CUSTOM_DNS_PRIM="172.31.0.2"        # Primary DNS (private)
+CUSTOM_DNS_SECO="8.8.8.8"           # Secondary DNS (public)
 
 # MTU Optimization for better performance
 OVPN_TUN_MTU="1372"
@@ -489,8 +593,13 @@ OVPN_AUTH="true"         # Enable user database
 **Important Configuration Notes:**
 - **OVPN_SERVER**: Replace `YOUR_PUBLIC_IP` with your server's actual public IP address or domain name
 - **Port Access**: Ensure port 7777/UDP is open in your firewall
-- **Network Conflicts**: Verify the Docker network (`172.20.0.0/16`) and VPN network (`10.8.0.0/24`) don't conflict with existing networks
+- **Network Conflicts**: Verify the Docker network (`20.20.0.0/16`) and VPN network (`10.8.0.0/24`) don't conflict with existing networks
 - **Authentication**: Two-factor auth (certificate + password) is enabled by default for security
+- **DNS Configuration**: 
+  - Set `CUSTOM_DOMAIN` to your private domain (e.g., "spreezy.in" or "internal.company.com")
+  - Set `CUSTOM_DNS_PRIM` to your private DNS server IP (e.g., AWS VPC DNS at "172.31.0.2")
+  - Set `CUSTOM_DNS_SECO` to a public DNS server (e.g., "8.8.8.8" for Google or "1.1.1.1" for Cloudflare)
+  - If you don't use private DNS, you can omit these variables or set both DNS to public resolvers
 
 #### Step 3: Launch Services
 ```bash
@@ -560,6 +669,8 @@ curl http://localhost:8080
 ```
 ovpn-admin/
 ├── docker-compose.yaml          # Main configuration
+├── .env                         # Environment variables (create from .env.template)
+├── .env.template                # Environment template
 ├── start.sh                     # Startup script
 ├── easyrsa_master/              # Certificate storage (created)
 │   ├── pki/
@@ -609,21 +720,69 @@ All environment variables are configured via the `.env` file. Copy [`.env.templa
 | `OVPN_AUTH_DB_PATH` | `/mnt/easyrsa/pki/users.db` | User database file path | Default path |
 | `LOG_LEVEL` | `info` | Application logging level | `"debug"` for troubleshooting |
 
+### DNS and Domain Configuration Variables
+
+| Variable | Default | Description | Example | Use Case |
+|----------|---------|-------------|---------|----------|
+| `CUSTOM_DOMAIN` | - | DNS search domain suffix pushed to VPN clients | `"spreezy.in"` | Enables short hostname lookup (e.g., "api" → "api.spreezy.in") |
+| `CUSTOM_DNS_PRIM` | - | Primary DNS server for VPN clients | `"172.31.0.2"` | Private DNS server for internal domain resolution (Route53 private hosted zone) |
+| `CUSTOM_DNS_SECO` | - | Secondary/fallback DNS server for VPN clients | `"8.8.8.8"` | Public DNS for internet domain resolution (Google DNS) |
+
+**DNS Configuration Notes:**
+
+1. **CUSTOM_DOMAIN** (DNS Search Domain):
+   - Automatically appended to unqualified hostnames
+   - Example: If `CUSTOM_DOMAIN="spreezy.in"`, querying "database" resolves to "database.spreezy.in"
+   - Improves user experience by allowing short names
+   - Only one domain suffix can be configured
+
+2. **CUSTOM_DNS_PRIM** (Primary DNS Server):
+   - **Typical Value**: `172.31.0.2` (AWS VPC DNS resolver)
+   - Used for resolving private hosted zones in AWS Route53
+   - Resolves internal resources not accessible from public internet
+   - Should point to your private DNS infrastructure
+
+3. **CUSTOM_DNS_SECO** (Secondary DNS Server):
+   - **Typical Value**: `8.8.8.8` (Google) or `1.1.1.1` (Cloudflare)
+   - Provides DNS redundancy if primary DNS fails
+   - Resolves public internet domains
+   - Ensures VPN clients can access external resources
+
+**Docker Container DNS Configuration:**
+
+The OpenVPN container itself also uses DNS servers configured in `docker-compose.yaml`:
+```yaml
+dns:
+  - 172.31.0.2  # Container uses private DNS
+  - 8.8.8.8     # Container uses public DNS for fallback
+```
+
+This is **separate** from the DNS pushed to VPN clients but typically uses the same values.
+
 ### Global Variables
 | Variable | Default | Description | Example |
 |----------|---------|-------------|---------|
-| `EASYRSA_CERT_EXPIRY` | `false` | Certificate expiry duration (in days) | `365` |
+| `EASYRSA_CERT_EXPIRY` | `365` | Certificate expiry duration (in days) | `365` (1 year), `1825` (5 years) |
 
 ### Configuration Examples
 
-#### Production Configuration
+#### Production Configuration with Private DNS
 ```env
-# Security-focused production setup
+# Security-focused production setup with AWS integration
 OVPN_PASSWD_AUTH="true"
 OVPN_AUTH="true"
 LOG_LEVEL="info"
 OVPN_DEBUG="false"
 OVPN_SERVER="vpn.yourcompany.com:7777:udp"
+
+# DNS Configuration for private resources
+CUSTOM_DOMAIN="internal.company.com"
+CUSTOM_DNS_PRIM="172.31.0.2"        # AWS VPC DNS
+CUSTOM_DNS_SECO="8.8.8.8"           # Google Public DNS
+
+# Network settings
+DOCKER_NETWORK="20.20.0.0/16"
+OVPN_CUSTOM_ROUTES="20.20.0.0 255.255.0.0"
 ```
 
 #### Development Configuration
@@ -634,6 +793,10 @@ OVPN_AUTH="false"
 LOG_LEVEL="debug"
 OVPN_DEBUG="true"
 OVPN_SERVER="192.168.1.100:7777:udp"
+
+# Public DNS only (no private infrastructure)
+CUSTOM_DNS_PRIM="8.8.8.8"
+CUSTOM_DNS_SECO="1.1.1.1"
 ```
 
 #### Network Optimization
@@ -641,24 +804,48 @@ OVPN_SERVER="192.168.1.100:7777:udp"
 # Optimized for most networks
 OVPN_TUN_MTU="1372"
 OVPN_MSSFIX="1332"
-OVPN_CUSTOM_ROUTES="172.20.0.0 255.255.0.0"
+OVPN_CUSTOM_ROUTES="20.20.0.0 255.255.0.0"
+```
+
+#### Multi-Cloud Setup (AWS + On-Premise)
+```env
+# VPN server with access to multiple networks
+OVPN_SERVER="vpn.example.com:7777:udp"
+
+# DNS Configuration
+CUSTOM_DOMAIN="company.local"       # Internal domain
+CUSTOM_DNS_PRIM="10.0.0.10"        # On-premise DNS server
+CUSTOM_DNS_SECO="172.31.0.2"       # AWS VPC DNS
+
+# Network Routes
+DOCKER_NETWORK="20.20.0.0/16"
+OVPN_CUSTOM_ROUTES="10.0.0.0 255.0.0.0"  # On-premise network
+
+# Additional routes can be added in configure.sh if needed
 ```
 
 ### Critical Environment Variables
 
 ⚠️ **Must Configure Before First Use:**
 1. **`OVPN_SERVER`**: Replace with your actual public IP or domain
-2. **`DOCKER_NETWORK`**: Ensure no conflicts with existing networks
+2. **`DOCKER_NETWORK`**: Ensure no conflicts with existing networks (changed from `172.20.0.0/16` to `20.20.0.0/16`)
 3. **`OVPN_PASSWD_AUTH`**: Set to `"true"` for production security
+4. **DNS Variables** (if using private infrastructure):
+   - **`CUSTOM_DOMAIN`**: Your private domain suffix
+   - **`CUSTOM_DNS_PRIM`**: Your private DNS server IP
+   - **`CUSTOM_DNS_SECO`**: Public DNS for fallback
 
 ### Network Configuration Variables
 
 | Variable | Purpose | Impact | Best Practice |
 |----------|---------|--------|---------------|
-| `OVPN_CUSTOM_ROUTES` | Routes pushed to VPN clients | Allows access to internal networks | `"172.20.0.0 255.255.0.0"` for Docker access |
-| `DOCKER_NETWORK` | Docker container network | Must match docker-compose network | Verify no IP conflicts |
+| `OVPN_CUSTOM_ROUTES` | Routes pushed to VPN clients | Allows access to internal networks | `"20.20.0.0 255.255.0.0"` for Docker access |
+| `DOCKER_NETWORK` | Docker container network | Must match docker-compose network | `"20.20.0.0/16"` - verify no IP conflicts |
 | `OVPN_TUN_MTU` | Tunnel MTU optimization | Prevents fragmentation | `"1372"` for most networks |
 | `OVPN_MSSFIX` | TCP MSS clamping | Prevents TCP fragmentation | `"1332"` (MTU - 40) |
+| `CUSTOM_DOMAIN` | DNS search domain suffix | Enables short hostname resolution | `"spreezy.in"` or `"internal.company.com"` |
+| `CUSTOM_DNS_PRIM` | Primary DNS server | Resolves private domains | `"172.31.0.2"` for AWS VPC DNS |
+| `CUSTOM_DNS_SECO` | Secondary DNS server | Fallback and public DNS | `"8.8.8.8"` or `"1.1.1.1"` |
 
 ### Security Variables
 
@@ -1090,6 +1277,513 @@ logging:
 - **Network configuration** adjustments for changing requirements
 
 This documentation provides comprehensive knowledge transfer for managing and maintaining the ovpn-admin OpenVPN solution. For additional support, refer to the official OpenVPN documentation and Docker best practices guides.
+
+---
+
+## DNS Configuration Deep Dive
+
+### Overview
+
+The ovpn-admin setup implements a **split-horizon DNS** configuration that enables VPN clients to seamlessly access both internal private resources and public internet services. This section provides detailed information about how DNS works in this OpenVPN setup.
+
+### DNS Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         VPN Client                              │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Application queries: "database.spreezy.in"              │  │
+│  └────────────────────────┬─────────────────────────────────┘  │
+│                           ▼                                     │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  VPN Client DNS Resolver                                 │  │
+│  │  - Domain Suffix: spreezy.in                            │  │
+│  │  - Primary DNS: 172.31.0.2                              │  │
+│  │  - Secondary DNS: 8.8.8.8                               │  │
+│  └──────────────┬──────────────────────┬────────────────────┘  │
+└─────────────────┼──────────────────────┼───────────────────────┘
+                  │                      │
+        ┌─────────▼────────┐   ┌────────▼──────────┐
+        │  Private DNS     │   │  Public DNS       │
+        │  172.31.0.2      │   │  8.8.8.8          │
+        │  (Route53 PHZ)   │   │  (Google DNS)     │
+        └──────────────────┘   └───────────────────┘
+                │                      │
+        ┌───────▼────────┐    ┌────────▼──────────┐
+        │ Internal IPs   │    │ Public IPs        │
+        │ 10.0.x.x       │    │ Internet          │
+        └────────────────┘    └───────────────────┘
+```
+
+### DNS Configuration Layers
+
+#### 1. Docker Container DNS (docker-compose.yaml)
+
+```yaml
+services:
+  openvpn:
+    dns:
+      - 172.31.0.2  # Private DNS for container itself
+      - 8.8.8.8     # Public DNS for container
+```
+
+**Purpose**: Configures DNS resolution **for the OpenVPN container itself** (not VPN clients)
+- Used when the container needs to resolve hostnames
+- Enables the container to access private resources during setup
+- Separate from DNS pushed to VPN clients
+
+#### 2. VPN Client DNS Push (configure.sh + Environment Variables)
+
+```bash
+# In configure.sh
+if [ ! -z "$CUSTOM_DOMAIN" ]; then
+    echo 'push "dhcp-option DOMAIN '${CUSTOM_DOMAIN}'"' >> /etc/openvpn/openvpn.conf
+fi
+
+if [ ! -z "$CUSTOM_DNS_PRIM" ]; then
+    echo 'push "dhcp-option DNS '${CUSTOM_DNS_PRIM}'"' >> /etc/openvpn/openvpn.conf
+fi
+
+if [ ! -z "$CUSTOM_DNS_SECO" ]; then
+    echo 'push "dhcp-option DNS '${CUSTOM_DNS_SECO}'"' >> /etc/openvpn/openvpn.conf
+fi
+```
+
+**Purpose**: Configures DNS resolution **for VPN clients** when they connect
+- Settings pushed from server to client during VPN connection
+- Overwrites client's local DNS settings while VPN is active
+- Restored to original when VPN disconnects
+
+### Environment Variables Explained
+
+#### CUSTOM_DOMAIN
+```env
+CUSTOM_DOMAIN="spreezy.in"
+```
+
+**What it does:**
+- Sets DNS search domain suffix for VPN clients
+- Automatically appends domain to unqualified hostnames
+- Simplifies internal resource access
+
+**Examples:**
+```bash
+# Without CUSTOM_DOMAIN:
+ping database              # Fails - not found
+
+# With CUSTOM_DOMAIN="spreezy.in":
+ping database              # Success - resolves to "database.spreezy.in"
+ping api                   # Success - resolves to "api.spreezy.in"
+```
+
+**Use Cases:**
+- Internal service discovery in microservices
+- Simplified access to AWS resources
+- Private hosted zones in Route53
+- Corporate intranet resources
+
+#### CUSTOM_DNS_PRIM
+```env
+CUSTOM_DNS_PRIM="172.31.0.2"
+```
+
+**What it does:**
+- Sets primary DNS server for VPN clients
+- First DNS server queried for all hostnames
+- Typically points to private DNS infrastructure
+
+**Common Values:**
+| Value | Description | Use Case |
+|-------|-------------|----------|
+| `172.31.0.2` | AWS VPC DNS Resolver | AWS environments with Route53 private zones |
+| `10.0.0.2` | Custom VPC DNS | Alternative AWS VPC DNS |
+| `192.168.1.1` | Corporate DNS | On-premise Active Directory/BIND DNS |
+| `10.x.x.x` | Private DNS | Any private DNS server in RFC1918 space |
+
+**Why 172.31.0.2?**
+- AWS VPC default DNS server
+- Located at VPC CIDR base + 2
+- Resolves Route53 private hosted zones
+- Resolves EC2 instance private DNS names
+
+#### CUSTOM_DNS_SECO
+```env
+CUSTOM_DNS_SECO="8.8.8.8"
+```
+
+**What it does:**
+- Sets secondary/fallback DNS server
+- Queried if primary DNS fails or times out
+- Provides public DNS resolution
+
+**Common Values:**
+| Value | Provider | Features |
+|-------|----------|----------|
+| `8.8.8.8` | Google Public DNS | Fast, reliable, widely used |
+| `1.1.1.1` | Cloudflare DNS | Privacy-focused, fastest |
+| `9.9.9.9` | Quad9 | Security-focused, malware blocking |
+| `208.67.222.222` | OpenDNS | Filtering options |
+
+### DNS Resolution Flow
+
+#### Scenario 1: Querying Internal Resource
+
+```
+VPN Client: "Hey, what's the IP of 'database'?"
+             ↓
+Step 1: Append CUSTOM_DOMAIN
+        "database" → "database.spreezy.in"
+             ↓
+Step 2: Query CUSTOM_DNS_PRIM (172.31.0.2)
+        Request: "database.spreezy.in"
+             ↓
+Step 3: Private DNS checks Route53 private zone
+        Found: database.spreezy.in → 10.0.1.25
+             ↓
+Step 4: Return private IP to VPN client
+        Client connects to: 10.0.1.25
+```
+
+#### Scenario 2: Querying Public Resource
+
+```
+VPN Client: "What's the IP of 'google.com'?"
+             ↓
+Step 1: Check if matches CUSTOM_DOMAIN
+        "google.com" ≠ "*.spreezy.in" → No suffix added
+             ↓
+Step 2: Query CUSTOM_DNS_PRIM (172.31.0.2)
+        Request: "google.com"
+             ↓
+Step 3: Private DNS forwards to upstream or times out
+        Not in private zone → forward to public DNS
+             ↓
+Step 4: Query CUSTOM_DNS_SECO (8.8.8.8)
+        Request: "google.com"
+             ↓
+Step 5: Public DNS returns public IP
+        Found: google.com → 142.250.185.46
+             ↓
+Step 6: Return public IP to VPN client
+        Client connects to internet
+```
+
+#### Scenario 3: Private DNS Failure
+
+```
+VPN Client: "What's the IP of 'api.spreezy.in'?"
+             ↓
+Step 1: Query CUSTOM_DNS_PRIM (172.31.0.2)
+        Request: "api.spreezy.in"
+             ↓
+Step 2: Private DNS is down (timeout after 5s)
+        ❌ No response
+             ↓
+Step 3: Fallback to CUSTOM_DNS_SECO (8.8.8.8)
+        Request: "api.spreezy.in"
+             ↓
+Step 4: Public DNS response
+        ❌ Not found (private domain)
+             ↓
+Step 5: Return error to VPN client
+        Client cannot resolve hostname
+```
+
+### Configuration Best Practices
+
+#### 1. AWS Environment Setup
+
+```env
+# Optimal AWS configuration
+CUSTOM_DOMAIN="internal.company.com"   # Your Route53 private zone
+CUSTOM_DNS_PRIM="172.31.0.2"          # AWS VPC DNS
+CUSTOM_DNS_SECO="8.8.8.8"             # Google Public DNS
+
+# docker-compose.yaml DNS (for container)
+dns:
+  - 172.31.0.2
+  - 8.8.8.8
+```
+
+**Enables:**
+- Access to EC2 instances by private DNS names
+- Route53 private hosted zone resolution
+- RDS endpoint resolution
+- ECS/EKS service discovery
+- Internet access for VPN clients
+
+#### 2. Multi-Cloud Environment
+
+```env
+# Access to AWS + Azure + On-Premise
+CUSTOM_DOMAIN="global.company.com"
+CUSTOM_DNS_PRIM="10.0.0.53"           # Central DNS server
+CUSTOM_DNS_SECO="1.1.1.1"             # Cloudflare DNS
+```
+
+#### 3. Development Environment
+
+```env
+# Simple development setup
+CUSTOM_DOMAIN=""                       # No domain suffix needed
+CUSTOM_DNS_PRIM="8.8.8.8"             # Public DNS only
+CUSTOM_DNS_SECO="1.1.1.1"             # Backup public DNS
+```
+
+#### 4. High Security Environment
+
+```env
+# Restricted DNS with monitoring
+CUSTOM_DOMAIN="secure.company.local"
+CUSTOM_DNS_PRIM="10.1.1.1"            # Internal DNS with logging
+CUSTOM_DNS_SECO="10.1.1.2"            # Backup internal DNS (no public DNS)
+```
+
+### Testing DNS Configuration
+
+#### From VPN Client (After Connecting)
+
+```bash
+# Check DNS servers being used
+cat /etc/resolv.conf
+# Should show:
+# search spreezy.in
+# nameserver 172.31.0.2
+# nameserver 8.8.8.8
+
+# Test internal DNS resolution
+nslookup database.spreezy.in
+# Should return private IP
+
+# Test public DNS resolution
+nslookup google.com
+# Should return public IP
+
+# Test domain suffix
+ping database
+# Should resolve to database.spreezy.in
+
+# Verify DNS query path
+dig database.spreezy.in +trace
+```
+
+#### From OpenVPN Server Container
+
+```bash
+# Enter the container
+docker exec -it ovpn-admin_openvpn_1 bash
+
+# Check container DNS
+cat /etc/resolv.conf
+# Should show: nameserver 172.31.0.2, nameserver 8.8.8.8
+
+# Test DNS resolution
+nslookup internal-service.spreezy.in
+ping google.com
+```
+
+#### From Admin Interface
+
+```bash
+# Check what's being pushed to clients
+docker exec -it ovpn-admin_openvpn_1 cat /etc/openvpn/openvpn.conf | grep "dhcp-option"
+
+# Should show:
+# push "dhcp-option DOMAIN spreezy.in"
+# push "dhcp-option DNS 172.31.0.2"
+# push "dhcp-option DNS 8.8.8.8"
+```
+
+### Common DNS Issues and Solutions
+
+#### Issue 1: VPN Clients Can't Resolve Internal Domains
+
+**Symptoms:**
+- `ping database.spreezy.in` fails
+- Internal services not accessible
+- Public internet works fine
+
+**Diagnosis:**
+```bash
+# Check if DNS settings are pushed
+cat /etc/resolv.conf  # On VPN client
+nslookup database.spreezy.in 172.31.0.2  # Direct query to private DNS
+```
+
+**Solutions:**
+1. Verify `CUSTOM_DNS_PRIM` is correct
+2. Ensure private DNS server is reachable from VPN network
+3. Check VPN routes include private DNS subnet
+4. Verify Route53 private zone is associated with VPC
+
+#### Issue 2: Can't Access Internet While Connected
+
+**Symptoms:**
+- `ping google.com` fails
+- All DNS queries timeout
+- VPN connection is active
+
+**Diagnosis:**
+```bash
+# Check if public DNS is configured
+cat /etc/resolv.conf
+# Should have secondary DNS (8.8.8.8)
+
+# Test public DNS directly
+nslookup google.com 8.8.8.8
+```
+
+**Solutions:**
+1. Verify `CUSTOM_DNS_SECO` is set
+2. Check `redirect-gateway` is working
+3. Ensure NAT rules in container are correct
+
+#### Issue 3: Domain Suffix Not Working
+
+**Symptoms:**
+- `ping database` fails (without FQDN)
+- Must type full domain: `ping database.spreezy.in`
+
+**Diagnosis:**
+```bash
+# Check search domain
+cat /etc/resolv.conf | grep search
+# Should show: search spreezy.in
+```
+
+**Solutions:**
+1. Verify `CUSTOM_DOMAIN` is set in .env
+2. Check configure.sh properly adds domain push
+3. Restart OpenVPN service
+4. Reconnect VPN client
+
+#### Issue 4: DNS Resolution is Slow
+
+**Symptoms:**
+- Long delays before websites load
+- `nslookup` takes 5+ seconds
+
+**Diagnosis:**
+```bash
+# Time DNS queries
+time nslookup database.spreezy.in
+time nslookup google.com
+
+# Check if primary DNS is timing out
+tcpdump -i tun0 port 53
+```
+
+**Solutions:**
+1. Check primary DNS server latency
+2. Swap DNS order if private DNS is slow
+3. Use geographically closer public DNS
+4. Verify firewall doesn't block UDP/53
+
+### Security Considerations
+
+#### DNS Leak Prevention
+
+The configuration ensures **no DNS leaks** by:
+1. Overriding client's default DNS servers
+2. Routing all DNS queries through VPN tunnel
+3. Using controlled DNS servers (not ISP DNS)
+
+**Verify no DNS leaks:**
+```bash
+# Before connecting VPN
+nslookup -type=TXT whoami.akamai.net
+
+# After connecting VPN
+nslookup -type=TXT whoami.akamai.net
+# Should show VPN server's IP, not your ISP
+```
+
+#### Private DNS Security
+
+**Risks:**
+- Unauthorized access to private DNS reveals network topology
+- DNS queries can be logged and monitored
+- Compromised DNS can redirect traffic
+
+**Mitigations:**
+1. Restrict private DNS access to VPN network only
+2. Use DNS query logging and monitoring
+3. Implement DNSSEC where possible
+4. Regular audit of DNS records
+5. Use DNS firewall rules (AWS Network Firewall)
+
+### Advanced DNS Configurations
+
+#### Multiple DNS Domains
+
+For organizations with multiple private zones:
+
+```bash
+# In configure.sh, add custom configuration:
+echo 'push "dhcp-option DOMAIN spreezy.in"' >> /etc/openvpn/openvpn.conf
+echo 'push "dhcp-option DOMAIN aws.internal"' >> /etc/openvpn/openvpn.conf
+echo 'push "dhcp-option DOMAIN azure.local"' >> /etc/openvpn/openvpn.conf
+```
+
+#### Conditional DNS Forwarding
+
+For split DNS with multiple DNS servers:
+
+```bash
+# Different DNS servers for different domains
+# Requires dnsmasq or similar in the VPN network
+# Example: Forward *.aws.com to AWS DNS, *.azure.com to Azure DNS
+```
+
+### Monitoring DNS
+
+#### Key Metrics to Monitor
+
+1. **DNS Query Success Rate**
+   ```bash
+   # Monitor DNS failures
+   grep "query failed" /var/log/syslog
+   ```
+
+2. **DNS Response Time**
+   ```bash
+   # Measure DNS latency
+   dig @172.31.0.2 database.spreezy.in | grep "Query time"
+   ```
+
+3. **DNS Server Availability**
+   ```bash
+   # Check if DNS servers are reachable
+   ping -c 1 172.31.0.2
+   ping -c 1 8.8.8.8
+   ```
+
+#### DNS Logging
+
+Enable DNS query logging for security auditing:
+
+```bash
+# In private DNS server (e.g., Route53 query logging)
+# Log all DNS queries from VPN subnet
+# Alert on suspicious patterns
+```
+
+### Summary
+
+The DNS configuration in ovpn-admin provides:
+
+✅ **Split-Horizon DNS**: Access both private and public resources seamlessly  
+✅ **Automatic Domain Suffix**: Simplifies internal resource access  
+✅ **DNS Redundancy**: Fallback DNS ensures reliability  
+✅ **No DNS Leaks**: All DNS queries routed through VPN  
+✅ **Flexible Configuration**: Adapts to various network environments  
+
+**Key Takeaways:**
+- `CUSTOM_DOMAIN` enables short hostname usage
+- `CUSTOM_DNS_PRIM` resolves private infrastructure
+- `CUSTOM_DNS_SECO` provides fallback and public resolution
+- Docker container DNS is separate from VPN client DNS
+- Proper configuration is critical for seamless VPN experience
 
 ---
 

@@ -43,6 +43,18 @@ fi
 
 cp -f /etc/openvpn/setup/openvpn.conf /etc/openvpn/openvpn.conf
 
+if [ ! -z "$CUSTOM_DOMAIN" ]; then
+    echo 'push "dhcp-option DOMAIN '${CUSTOM_DOMAIN}'"' >> /etc/openvpn/openvpn.conf
+fi
+
+if [ ! -z "$CUSTOM_DNS_PRIM" ]; then
+    echo 'push "dhcp-option DNS '${CUSTOM_DNS_PRIM}'"' >> /etc/openvpn/openvpn.conf
+fi
+
+if [ ! -z "$CUSTOM_DNS_SECO" ]; then
+    echo 'push "dhcp-option DNS '${CUSTOM_DNS_SECO}'"' >> /etc/openvpn/openvpn.conf
+fi
+
 if [ ! -z "$OVPN_TUN_MTU" ]; then
     echo "tun-mtu $OVPN_TUN_MTU" >> /etc/openvpn/openvpn.conf
 fi

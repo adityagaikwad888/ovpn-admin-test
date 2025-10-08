@@ -35,6 +35,9 @@ services:
     volumes:
       - ./easyrsa_master:/etc/openvpn/easyrsa
       - ./ccd_master:/etc/openvpn/ccd
+    dns:
+      - 172.31.0.2 # This is private DNS (Route53 Private hosted zone)
+      - 8.8.8.8 # This is public DNS (Google DNS) for public domain resolution
     networks:
       - vpn-internal
 

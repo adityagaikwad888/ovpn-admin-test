@@ -19,8 +19,8 @@ openvpn-ui
 openvpn-admin
 ovpn-admin
 
-.env
-docker-compose-image-based.yaml
+.env*
+docker-compose-example.yaml
 docker-compose.yaml
 docker-compose-slave.yaml
 img

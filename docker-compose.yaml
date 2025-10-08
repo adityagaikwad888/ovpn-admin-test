@@ -1,3 +1,4 @@
+version: '3.8'
 
 networks:
   vpn-internal:
@@ -25,6 +26,9 @@ services:
     volumes:
       - ./easyrsa_master:/etc/openvpn/easyrsa
       - ./ccd_master:/etc/openvpn/ccd
+    dns:
+      - 172.31.0.2
+      - 8.8.8.8
     networks:
       - vpn-internal
     restart: always

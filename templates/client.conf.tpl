@@ -11,9 +11,12 @@ key-direction 1
 redirect-gateway def1
 persist-key
 persist-tun
-#tls-client
+tls-client
 remote-cert-tls server
 auth-user-pass
+script-security 2
+up /etc/openvpn/update-resolv-conf
+down /etc/openvpn/update-resolv-conf
 
 <cert>
 {{ .Cert -}}
