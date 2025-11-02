@@ -19,7 +19,93 @@
 
 ### What is ovpn-admin?
 
-**ovpn-admin** is a web-based management interface for OpenVPN servers that simplifies the administration of VPN users, certificates, and network configurations. It consists of two main components:
+**ovpn-admin** is a web-based management inte# Client-Side Setup
+# VPN Connection Guide  
+
+This guide explains how to connect to a VPN on **macOS** using Tunnelblick and on **Linux** using Network Manager.  
+
+---
+
+## macOS – Connect VPN via Tunnelblick  
+
+### 1. Download & Install Tunnelblick  
+- Visit [tunnelblick.net](https://tunnelblick.net)  
+- Download the latest stable release for macOS  
+- Open the `.dmg` file and drag **Tunnelblick** into your **Applications** folder  
+- Open Tunnelblick (you may need to allow it in **System Preferences -> Security & Privacy**)  
+
+### 2. Obtain VPN Configuration Files  
+- we sent u `.ovpn` file 
+- Download and Open the `.ovpn` file and comment out these 3 lines using #
+```bash
+script-security 2
+up /etc/openvpn/update-resolv-conf
+down /etc/openvpn/update-resolv-conf
+```
+### 3. Install the Configuration  
+- Double-click the `.ovpn` file, Tunnelblick will ask to install it  
+- Choose **Only Me** (for your account only) or **All Users**  
+![screeshot2.jpg]
+- The configuration will now be available in Tunnelblick  
+
+### 4. Connect to the VPN  
+- Click the **Tunnelblick** icon in the top menu bar (near the clock)  
+- Select your VPN profile present at left hand side and click **Connect**  
+![screenshot12.jpg](/screenshot12.jpg)
+- Enter your VPN username and password (if required)  
+![screenshot2.jpg](/screenshot2.jpg)
+- Once connected, the icon will turn dark, indicating the tunnel is active  
+
+### 5. Verify the Connection  
+- Open terminal and just run command to confirm your IP has changed. you will get ip in 10.8.0.0/16 cider
+```bash
+ifconfig
+```
+- Or check logs via:  
+  - Tunnelblick menu -> **VPN Details** -> select configuration -> **Log**  
+
+### 6. Disconnect When Done  
+- Click the **Tunnelblick** icon -> select your VPN -> **Disconnect**  
+![screeshot4.jpg](/screeshot4.jpg)
+
+---
+
+
+## Linux – Connect VPN via GUI (Network Manager)  
+
+### 1. Open Network Settings
+- Install the required Packages
+```bash
+sudo apt update
+sudo apt install network-manager-openvpn network-manager-openvpn-gnome -y
+sudo systemctl restart NetworkManager
+```
+- Click the **Network** icon (top-right corner)  
+- Go to **Settings -> Network -> VPN -> + Add VPN**  
+![screenshot_from_2025-09-22_16-01-22.png](/screenshot_from_2025-09-22_16-01-22.png)
+
+### 2. Import Configuration  
+- Select **Import from file…**  
+- Choose your `.ovpn` file  
+![screenshot_from_2025-09-22_16-01-43.png](/screenshot_from_2025-09-22_16-01-43.png)
+
+### 3. Authenticate & Connect
+- Don't directly connect after step 2
+- Go to the identity section. If u don't get it click on vpn settings for that perticular vpn and then go to identity section.
+- Enter your username and password (if required)  
+![screenshot_from_2025-09-22_16-02-32.png](/screenshot_from_2025-09-22_16-02-32.png)
+
+- Save the configuration and click **Connect**
+The three dots indicate that you are not connected to the VPN.
+![screenshot_from_2025-09-22_16-05-04.png](/screenshot_from_2025-09-22_16-05-04.png)
+- you are connected to vpn
+![screenshot_from_2025-09-22_16-03-22.png](/screenshot_from_2025-09-22_16-03-22.png)
+
+### 4. Verify the Connection  
+- Open terminal and just run command to confirm your IP has changed. you will get ip in 10.8.0.0/16 cider
+```bash
+hostname -I
+```rface for OpenVPN servers that simplifies the administration of VPN users, certificates, and network configurations. It consists of two main components:
 
 1. **OpenVPN Server Container**: Runs the actual VPN server with automated certificate management
 2. **Admin Web Interface**: Go-based backend with Vue.js frontend for user management
@@ -376,8 +462,17 @@ tls-auth /etc/openvpn/easyrsa/pki/ta.key    # TLS authentication key
 ### Connection Management
 ```
 #management 127.0.0.1 8989                 # Management interface (set via command line)
-keepalive 10 60                            # Ping every 10s, timeout after 60s
+keepalive 10 300                           # Ping every 10s, timeout after 300s
+
+# ADDED: Prevent idle disconnections (CRITICAL FIX!)
+inactive 0                                 # Disable auto-disconnect on inactivity
+ping-timer-rem                             # Restart timeout on ping receipt
 ```
+
+**Connection Stability Enhancements:**
+- **keepalive 10 300**: Increased timeout from 60s to 300s for more stable connections
+- **inactive 0**: Disables automatic disconnection due to inactivity (critical for long-running connections)
+- **ping-timer-rem**: Resets the timeout timer when ping is received, preventing false disconnects
 
 ### Persistence Options
 ```
@@ -398,9 +493,13 @@ user nobody                                # Run as unprivileged user
 group nogroup                              # Run as unprivileged group
 tls-server                                 # Initialize TLS as server
 key-direction 0                            # Key direction for tls-auth
-cipher AES-128-CBC                         # Fallback cipher
-cipher AES-256-GCM                         # Preferred cipher (AEAD)
+cipher AES-256-GCM                         # Modern AEAD cipher (AES-128-CBC removed)
 ```
+
+**Security Notes:**
+- Using only **AES-256-GCM** cipher for enhanced security and performance
+- Removed **AES-128-CBC** fallback cipher to enforce stronger encryption standards
+- AES-256-GCM provides authenticated encryption with associated data (AEAD)
 
 ### Client Network Configuration
 ```
@@ -492,15 +591,26 @@ verb 4                                      # Verbose logging for troubleshootin
 client                                      # Client mode
 nobind                                      # Don't bind to local port
 dev tun                                     # TUN device type
-cipher AES-256-GCM                         # Encryption cipher
+cipher AES-256-GCM                         # Encryption cipher (matching server)
 key-direction 1                            # Client key direction (opposite of server)
 redirect-gateway def1                      # Route all traffic through VPN
 persist-key                                # Don't re-read keys on restart
 persist-tun                                # Don't close TUN on restart
-#tls-client                                # TLS client mode (commented out)
 remote-cert-tls server                     # Verify server certificate
 auth-user-pass                            # Prompt for username/password
+
+# DNS Management Scripts (Linux clients)
+script-security 2                          # Allow calling external scripts
+up /etc/openvpn/update-resolv-conf        # Update DNS on connection
+down /etc/openvpn/update-resolv-conf      # Restore DNS on disconnection
 ```
+
+**Client Configuration Details:**
+- **script-security 2**: Enables execution of the DNS update scripts
+- **update-resolv-conf**: Automatically manages DNS settings on Linux clients
+  - **up**: Called when VPN connection is established - updates `/etc/resolv.conf` with VPN DNS
+  - **down**: Called when VPN disconnects - restores original DNS settings
+- **Note for Windows/macOS**: These DNS scripts are Linux-specific. Windows and macOS clients handle DNS automatically
 
 ### Embedded Certificates
 ```

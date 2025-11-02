@@ -11,7 +11,6 @@ key-direction 1
 redirect-gateway def1
 persist-key
 persist-tun
-tls-client
 remote-cert-tls server
 auth-user-pass
 script-security 2
